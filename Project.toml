@@ -19,7 +19,7 @@ RedisModelContextProtocolExt = ["ModelContextProtocol"]
 
 [compat]
 Base64 = "1"
-Dates = "1.11.0"
+Dates = "1"
 JSON = "1"
 Logging = "1"
 ModelContextProtocol = "1"
