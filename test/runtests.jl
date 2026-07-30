@@ -1,5 +1,24 @@
 using Test, Redis, Harbor
 
+"""
+    docker_available() -> Bool
+
+Whether a Docker daemon that can run Linux containers is reachable.  The OS check
+matters: a Windows runner has a responsive daemon in Windows-container mode, so a
+`docker pull redis` fails partway through the run rather than skipping cleanly.
+"""
+function docker_available()
+    Sys.which("docker") === nothing && return false
+    try
+        return strip(read(`docker info --format "{{.OSType}}"`, String)) == "linux"
+    catch
+        return false
+    end
+end
+
+const DOCKER = docker_available()
+DOCKER || @warn "docker unavailable — tests needing a Redis server will be skipped"
+
 mutable struct FailingAfterWriteIO <: IO
     open::Bool
     wrote::Base.RefValue{Bool}
@@ -142,6 +161,9 @@ end
     end
 
     @testset "Basic connections" begin
+      if !DOCKER
+        @test_skip "server-backed tests (docker unavailable)"
+      else
         Harbor.with_container("redis"; wait_strategy=(pattern="Ready to accept connections tcp",), ports=Dict(6379 => 6379), command=["redis-server"]) do _
             redis = Redis.connect("127.0.0.1", 6379)
             Redis.set(redis, "key2", "value2")
@@ -228,5 +250,6 @@ end
                 true
             end
         end
+      end
     end
 end
