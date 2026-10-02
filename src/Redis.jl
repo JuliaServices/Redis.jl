@@ -378,22 +378,29 @@ end
             start, pos, len = getmoredata!(socket, buf, start, pos, len)
         end
         buf[pos] == UInt8('\r') && return start, pos, len
+        buf[pos] == UInt8('\n') && throw(RedisError("Unexpected newline in RESP line"))
         pos += 1
     end
     @assert false
 end
 
-# skip past a RESP \r\n terminator, ensuring \n is in the buffer
-# pos must point to the \r byte
-@inline function skipcrlf(socket, buf, start, pos, len)
-    if pos < len
-        # both \r and \n are already in the buffer
-        return pos + 2, len
+# Consume a complete RESP terminator before delivering the response to its caller.
+@inline function skipcrlf(socket, buf, pos, len)
+    for expected in (UInt8('\r'), UInt8('\n'))
+        if pos > len
+            _, pos, len = getmoredata!(socket, buf, pos, pos, len)
+        end
+        buf[pos] == expected || throw(RedisError("Expected CRLF in RESP response"))
+        pos += 1
     end
-    # \r is at the buffer edge; read more data to get \n
-    _, newpos, len = getmoredata!(socket, buf, start, pos + 1, len)
-    # newpos is where \n was placed; skip past it
-    return newpos + 1, len
+    return pos, len
+end
+
+function parselength(buf, start, stop)
+    stop == start + 1 && buf[start] == UInt8('-') && buf[stop] == UInt8('1') && return -1
+    start <= stop && all(i -> UInt8('0') <= buf[i] <= UInt8('9'), start:stop) ||
+        throw(RedisError("Invalid RESP length"))
+    return Parsers.parse(Int, buf, Parsers.OPTIONS, start, stop)
 end
 
 @inline function _read_some!(socket::ReseauConn, buf::AbstractVector{UInt8}, nb::Integer)::Int
@@ -453,37 +460,47 @@ end
             if type == UInt8('+')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                f(unsafe_string(pointer(buf, start), pos - start))
-                return skipcrlf(socket, buf, start, pos, len)
+                value = unsafe_string(pointer(buf, start), pos - start)
+                pos, len = skipcrlf(socket, buf, pos, len)
+                f(value)
+                return pos, len
             elseif type == UInt8('-')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                f(RedisError(unsafe_string(pointer(buf, start), pos - start)))
-                return skipcrlf(socket, buf, start, pos, len)
+                value = RedisError(unsafe_string(pointer(buf, start), pos - start))
+                pos, len = skipcrlf(socket, buf, pos, len)
+                f(value)
+                return pos, len
             elseif type == UInt8(':')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                f(Parsers.parse(Int, buf, Parsers.OPTIONS, start, pos - 1))
-                return skipcrlf(socket, buf, start, pos, len)
+                value = Parsers.parse(Int, buf, Parsers.OPTIONS, start, pos - 1)
+                pos, len = skipcrlf(socket, buf, pos, len)
+                f(value)
+                return pos, len
             elseif type == UInt8('$')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                bulklen = Parsers.parse(Int, buf, Parsers.OPTIONS, start, pos - 1)
-                pos, len = skipcrlf(socket, buf, start, pos, len)
+                bulklen = parselength(buf, start, pos - 1)
+                pos, len = skipcrlf(socket, buf, pos, len)
                 debug && @info "Bulklen: $bulklen"
                 if bulklen == -1
                     f(nothing)
                     return pos, len
                 end
                 start = pos
-                start, pos, len = findnewline(socket, buf, start, pos, len)
-                f(unsafe_string(pointer(buf, start), pos - start))
-                return skipcrlf(socket, buf, start, pos, len)
+                while bulklen > len - start + 1
+                    start, _, len = getmoredata!(socket, buf, start, len + 1, len)
+                end
+                value = unsafe_string(pointer(buf, start), bulklen)
+                pos, len = skipcrlf(socket, buf, start + bulklen, len)
+                f(value)
+                return pos, len
             elseif type == UInt8('*')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                nelem = Parsers.parse(Int, buf, Parsers.OPTIONS, start, pos - 1)
-                pos, len = skipcrlf(socket, buf, start, pos, len)
+                nelem = parselength(buf, start, pos - 1)
+                pos, len = skipcrlf(socket, buf, pos, len)
                 debug && @info "Array count: $nelem"
                 if nelem == -1
                     f(nothing)
