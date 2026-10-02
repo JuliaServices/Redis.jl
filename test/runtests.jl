@@ -54,9 +54,13 @@ end
         function Base.readbytes!(io::ChunkedIO, dst::AbstractVector{UInt8}, nb::Integer=length(dst))
             eof(io) && return 0
             chunk = io.chunks[io.nextchunk]
-            io.nextchunk += 1
             nread = min(Int(nb), length(chunk))
             copyto!(dst, 1, chunk, 1, nread)
+            if nread < length(chunk)
+                io.chunks[io.nextchunk] = chunk[nread+1:end]
+            else
+                io.nextchunk += 1
+            end
             return nread
         end
 
@@ -144,6 +148,62 @@ end
         Redis.readresponse!(ChunkedIO(chunked_bulk)) do x
             @test x == "foobar"
         end
+
+        @testset "bulk response framing" begin
+            bulk_frame(value) = "\$$(sizeof(value))\r\n$value\r\n"
+            function read_replies(io, count; bufsize=4096)
+                buf = Vector{UInt8}(undef, bufsize)
+                pos, len = 1, 0
+                values = Any[]
+                for _ in 1:count
+                    pos, len = Redis.readresponse!(x -> push!(values, x), io, buf, pos, len, false)
+                end
+                return values
+            end
+
+            binary = String(UInt8[0x00, 0xff, 0x0d, 0x0a, 0x80])
+            for value in ("", "\r", "\n", "a\r\nb", "flight ✈️", binary,
+                          String(collect(UInt8(0):UInt8(255))), repeat("a\r\n", 4096))
+                for bufsize in (1, 2, 7, 4096)
+                    wire = bulk_frame(value) * ":42\r\n"
+                    @test read_replies(IOBuffer(wire), 2; bufsize) == [value, 42]
+                end
+            end
+
+            wire = collect(codeunits("*3\r\n" * bulk_frame(binary) * "\$-1\r\n*1\r\n" * bulk_frame("") * ":42\r\n"))
+            expected = Any[Any[binary, nothing, [""]], 42]
+            # Split at every byte, including the lengths, binary data, and CRLFs.
+            for split_at in 1:length(wire)-1
+                chunks = [wire[1:split_at], wire[split_at+1:end]]
+                @test read_replies(ChunkedIO(chunks), 2; bufsize=7) == expected
+            end
+            @test read_replies(ChunkedIO([[b] for b in wire]), 2; bufsize=1) == expected
+
+            overflow = string(big(typemax(Int)) + 1)
+            for invalid in ("\$-2\r\n", "*-2\r\n", "\$+1\r\na\r\n", "*+1\r\n:1\r\n",
+                            "\$ 1\r\na\r\n", "\$1 \r\na\r\n", "\$\r\n", "*\r\n",
+                            "\$$overflow\r\n", "*$overflow\r\n", "\$1\rXa\r\n",
+                            "\$1\r\naXX", "\$0\r\nXX", "\$1\r\nab\r\n", "\$3\r\nab\r\n",
+                            "*1\r\n\$-2\r\n", "+O\nK\r\n", "+OK\rX", "-ERR\rX", ":1\rX")
+                for io in (IOBuffer(invalid), ChunkedIO([[b] for b in codeunits(invalid)]))
+                    delivered = Ref(false)
+                    @test_throws Union{Redis.RedisError,Redis.Parsers.Error} Redis.readresponse!(
+                        _ -> (delivered[] = true), io, Vector{UInt8}(undef, 7), 1, 0, false)
+                    @test !delivered[]
+                end
+            end
+
+            for truncated in ("\$1\r\na", "\$1\r\na\r", "\$2\r\na", "\$0\r\n\r",
+                              "\$$(typemax(Int))\r\na", "\$-1\r", "*-1\r", "*1\r\n",
+                              "+OK\r", "-ERR\r", ":1\r")
+                delivered = Ref(false)
+                @test_throws EOFError Redis.readresponse!(
+                    _ -> (delivered[] = true), IOBuffer(truncated), Vector{UInt8}(undef, 7), 1, 0, false)
+                @test !delivered[]
+            end
+            @test read_replies(IOBuffer("\$-1\r\n*-1\r\n\$0\r\n\r\n*0\r\n"), 4; bufsize=1) ==
+                  Any[nothing, nothing, "", []]
+        end
     end
 
     @testset "connection failures" begin
@@ -168,6 +228,12 @@ end
             redis = Redis.connect("127.0.0.1", 6379)
             Redis.set(redis, "key2", "value2")
             @test Redis.get(redis, "key2") == "value2"
+            binary_value = "flight\r\ncontinuation\0" * String(UInt8[0xff])
+            @test Redis.set(redis, "binary-key", binary_value) == "OK"
+            @test Redis.get(redis, "binary-key") == binary_value
+            @test Redis.mget(redis, "binary-key", "missing-binary-key") == [binary_value, nothing]
+            @test Redis.execute(redis, Redis.Commands.get("binary-key"), Redis.Commands.get("key2")) ==
+                  [binary_value, "value2"]
             close(redis.socket)
             @test Redis.set(redis, "reconnect-key", "reconnect-value") == "OK"
             @test Redis.get(redis, "reconnect-key") == "reconnect-value"
@@ -210,6 +276,7 @@ end
             @test Set(collect(Redis.Scan(redis, "scan:key:*"))) == Set(["scan:key:1", "scan:key:2"])
             # cleanup
             Redis.del(redis, "key2")
+            Redis.del(redis, "binary-key")
             Redis.del(redis, "reconnect-key")
             Redis.del(redis, "listkey")
             Redis.del(redis, "unicode-listkey")
