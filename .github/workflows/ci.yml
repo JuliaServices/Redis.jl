@@ -31,6 +31,9 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
+      - name: Test Parsers 2
+        if: matrix.version == 'min' && matrix.os == 'ubuntu-latest'
+        run: julia --project -e 'using Pkg; Pkg.add(PackageSpec(name="Parsers", version="2"))'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1

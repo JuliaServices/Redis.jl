@@ -400,7 +400,7 @@ function parselength(buf, start, stop)
     stop == start + 1 && buf[start] == UInt8('-') && buf[stop] == UInt8('1') && return -1
     start <= stop && all(i -> UInt8('0') <= buf[i] <= UInt8('9'), start:stop) ||
         throw(RedisError("Invalid RESP length"))
-    return Parsers.parse(Int, buf, Parsers.OPTIONS, start, stop)
+    return Parsers.parse(Int, @view buf[start:stop])
 end
 
 @inline function _read_some!(socket::ReseauConn, buf::AbstractVector{UInt8}, nb::Integer)::Int
@@ -474,7 +474,7 @@ end
             elseif type == UInt8(':')
                 start = pos
                 start, pos, len = findnewline(socket, buf, start, pos, len)
-                value = Parsers.parse(Int, buf, Parsers.OPTIONS, start, pos - 1)
+                value = Parsers.parse(Int, @view buf[start:pos-1])
                 pos, len = skipcrlf(socket, buf, pos, len)
                 f(value)
                 return pos, len
