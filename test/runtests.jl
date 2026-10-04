@@ -161,6 +161,12 @@ end
                 return values
             end
 
+            for value in (0, -1, typemin(Int), typemax(Int))
+                for bufsize in (1, 2, 7, 4096)
+                    @test read_replies(IOBuffer(":$value\r\n+OK\r\n"), 2; bufsize) == [value, "OK"]
+                end
+            end
+
             binary = String(UInt8[0x00, 0xff, 0x0d, 0x0a, 0x80])
             for value in ("", "\r", "\n", "a\r\nb", "flight ✈️", binary,
                           String(collect(UInt8(0):UInt8(255))), repeat("a\r\n", 4096))
@@ -180,6 +186,7 @@ end
             @test read_replies(ChunkedIO([[b] for b in wire]), 2; bufsize=1) == expected
 
             overflow = string(big(typemax(Int)) + 1)
+            parse_error = isdefined(Redis.Parsers, :Error) ? Redis.Parsers.Error : OverflowError
             for invalid in ("\$-2\r\n", "*-2\r\n", "\$+1\r\na\r\n", "*+1\r\n:1\r\n",
                             "\$ 1\r\na\r\n", "\$1 \r\na\r\n", "\$\r\n", "*\r\n",
                             "\$$overflow\r\n", "*$overflow\r\n", "\$1\rXa\r\n",
@@ -187,7 +194,7 @@ end
                             "*1\r\n\$-2\r\n", "+O\nK\r\n", "+OK\rX", "-ERR\rX", ":1\rX")
                 for io in (IOBuffer(invalid), ChunkedIO([[b] for b in codeunits(invalid)]))
                     delivered = Ref(false)
-                    @test_throws Union{Redis.RedisError,Redis.Parsers.Error} Redis.readresponse!(
+                    @test_throws Union{Redis.RedisError,parse_error} Redis.readresponse!(
                         _ -> (delivered[] = true), io, Vector{UInt8}(undef, 7), 1, 0, false)
                     @test !delivered[]
                 end
