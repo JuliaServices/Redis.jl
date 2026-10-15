@@ -590,24 +590,27 @@ struct Scan
 end
 
 Scan(client) = Scan(client, "")
-Base.IteratorSize(::Type{Scan}) = Base.SizeUnknown()
 Base.IteratorEltype(::Type{Scan}) = Base.HasEltype()
 Base.eltype(::Type{Scan}) = String
 
-function Base.iterate(ss::Scan, state=nothing)
+# Iterate a SCAN-family cursor. A batch can be empty before the cursor returns
+# to "0", so keep fetching until a batch has items or the cursor wraps.
+function cursoriterate(fetch, state)
     if state === nothing
         cursor = "0"
     else
-        (cursor, keys), i = state
-        i <= length(keys) && return keys[i], ((cursor, keys), i+1)
+        (cursor, items), i = state
+        i <= length(items) && return items[i], ((cursor, items), i + 1)
         cursor == "0" && return nothing
     end
     while true
-        cursor, keys = scan(ss.client, cursor; match=ss.match)
-        !isempty(keys) && return keys[1], ((cursor, keys), 2)
+        cursor, items = fetch(cursor)
+        isempty(items) || return items[1], ((cursor, items), 2)
         cursor == "0" && return nothing
     end
 end
+
+Base.iterate(ss::Scan, state=nothing) = cursoriterate(c -> scan(ss.client, c; match=ss.match), state)
 
 function Commands.zrange(client::Client, key::AbstractString, min::AbstractString, max::AbstractString, bylex::Bool=false, useLegacyCommand::Bool=true)
     command = Commands.zrange(key, min, max, bylex, useLegacyCommand)
@@ -665,20 +668,7 @@ end
 
 Zscan(client, key) = Zscan(client, key, "")
 
-function Base.iterate(ss::Zscan, state=nothing)
-    if state === nothing
-        cursor, members = zscan(ss.client, ss.key; match=ss.match)
-        i = 1
-    else
-        (cursor, members), i = state
-        if i > length(members)
-            cursor == "0" && return nothing
-            cursor, members = zscan(ss.client, ss.key, cursor; match=ss.match)
-            i = 1
-        end
-    end
-    return members[i], ((cursor, members), i+1)
-end
+Base.iterate(ss::Zscan, state=nothing) = cursoriterate(c -> zscan(ss.client, ss.key, c; match=ss.match), state)
 
 function Commands.xadd(client::Client, key::AbstractString, id::AbstractString, field::AbstractString, value::AbstractString)
     command = Commands.xadd(key, id, field, value)
@@ -754,20 +744,7 @@ end
 
 Sscan(client, key) = Sscan(client, key, "")
 
-function Base.iterate(ss::Sscan, state=nothing)
-    if state === nothing
-        cursor, members = sscan(ss.client, ss.key; match=ss.match)
-        i = 1
-    else
-        (cursor, members), i = state
-        if i > length(members)
-            cursor == "0" && return nothing
-            cursor, members = sscan(ss.client, ss.key, cursor; match=ss.match)
-            i = 1
-        end
-    end
-    return members[i], ((cursor, members), i+1)
-end
+Base.iterate(ss::Sscan, state=nothing) = cursoriterate(c -> sscan(ss.client, ss.key, c; match=ss.match), state)
 
 function Commands.multi(client::Client)
     command = Commands.multi()
@@ -823,7 +800,7 @@ function Commands.hset(client::Client, key::AbstractString, field::AbstractStrin
     return execute(client, command)
 end
 
-function Commands.hscan(client::Client, key::AbstractString, cursor::Int64; match::Union{Nothing,AbstractString}=nothing)
+function Commands.hscan(client::Client, key::AbstractString, cursor::Union{Integer,AbstractString}="0"; match::Union{Nothing,AbstractString}=nothing)
     command = Commands.hscan(key, cursor; match=match)
     client.debug && @info "HSCAN Command: $(command.cmd)"
     return execute(client, command)
@@ -837,20 +814,8 @@ end
 
 Hscan(client, key) = Hscan(client, key, "")
 
-function Base.iterate(ss::Hscan, state=nothing)
-    if state === nothing
-        cursor, members = hscan(ss.client, ss.key, "0"; match=ss.match)
-        i = 1
-    else
-        (cursor, members), i = state
-        if i > length(members)
-            cursor == "0" && return nothing
-            cursor, members = hscan(ss.client, ss.key, cursor; match=ss.match)
-            i = 1
-        end
-    end
-    return members[i], ((cursor, members), i+1)
-end
+Base.iterate(ss::Hscan, state=nothing) = cursoriterate(c -> hscan(ss.client, ss.key, c; match=ss.match), state)
+Base.IteratorSize(::Type{<:Union{Scan, Zscan, Sscan, Hscan}}) = Base.SizeUnknown()
 
 function Commands.rpush(client::Client, key::AbstractString, value::AbstractString)
     command = Commands.rpush(key, value)

@@ -213,6 +213,48 @@ end
         end
     end
 
+    @testset "command encoding" begin
+        # a request is "*n" and then exactly n "$len" bulk strings
+        function wellformed(cmd)
+            b = codeunits(cmd.cmd)
+            m = match(r"^\*(\d+)\r\n", cmd.cmd)
+            m === nothing && return false
+            i = sizeof(m.match) + 1
+            for _ in 1:parse(Int, m[1])
+                j = findnext(==(UInt8('\r')), b, i)
+                (j === nothing || b[i] != UInt8('$')) && return false
+                i = j + 2 + parse(Int, String(b[(i + 1):(j - 1)]))
+                (i + 1 <= length(b) && b[i] == UInt8('\r') && b[i + 1] == UInt8('\n')) || return false
+                i += 2
+            end
+            return i == length(b) + 1
+        end
+        C = Redis.Commands
+        k = "ключ✈" # multi-byte, so character and byte lengths differ
+        cmds = [C.auth(k), C.select(3), C.scan("0"), C.scan("0"; match=k),
+            C.zscan(k, "0"), C.zscan(k, "0"; match=k), C.sscan(k, "0"), C.sscan(k, "0"; match=k),
+            C.hscan(k, 0), C.hscan(k, "0"; match=k), C.hscan(k, 0; match=""),
+            C.set(k, k), C.set(k, k; nx=true, ex=5), C.set(k, k; xx=true, px=5), C.mset(k => k, "a" => "b"),
+            C.append(k, k), C.incrby(k, 3), C.get(k), C.mget(k, k), C.del(k),
+            C.zrange(k, "0", "1"), C.zrange(k, "0", "1", true), C.zrange(k, "0", "1", false, false), C.zrange(k, "0", "1", true, false),
+            C.zadd(k, "1", k), C.zcard(k), C.zrem(k, k), C.zrevrangebyscore(k, "1", "0"),
+            C.zrevrangebyscore(k, "1", "0"; limit_start=1, limit_count=2), C.zremrangebyrank(k, 0, -1),
+            C.zrevrange(k, 0, -1), C.zrevrange(k, 0, -1; withscores=true),
+            C.xadd(k, "*", k, k), C.xadd(k, "*", k, k, 10), C.xdel(k, "1-0"), C.xrange(k, "-", "+"), C.xtrim(k, 10), C.xtrim(k, 10, true),
+            C.xgroup_create(k, k), C.xgroup_create(k, k, "0"; mkstream=true), C.xgroup_destroy(k, k), C.xgroup_setid(k, k, "0"),
+            C.xgroup_delconsumer(k, k, k), C.xreadgroup(k, k, k => ">"), C.xreadgroup(k, k, k => ">", "s" => "0"; count=5, block=10, noack=true),
+            C.xack(k, k, "1-0", "2-0"), C.xpending(k, k), C.xpending(k, k; count=10, idle=5, consumer=k),
+            C.xclaim(k, k, k, 100, "1-0"), C.xclaim(k, k, k, 100, "1-0"; idle=1, time=2, retrycount=3, force=true, justid=true),
+            C.xinfo_stream(k), C.xinfo_groups(k), C.xinfo_consumers(k, k),
+            C.sadd(k, k), C.sismember(k, k), C.srem(k, k), C.scard(k), C.smembers(k), C.multi(), C.exec(), C.discard(),
+            C.expire(k, 5), C.publish(k, k), C.hdel(k, k), C.hget(k, k), C.hlen(k), C.hset(k, k, k),
+            C.rpush(k, k), C.lindex(k, 0), C.lpush(k, k), C.ltrim(k, 0, -1), C.lrange(k, 0, -1), C.lrem(k, 1, k),
+            C.geoadd(k, "1", "2", k), C.geodist(k, k, k, "km"), C.geohash(k, k, k), C.geopos(k, k), C.geosearch(k, "1", "2", "3", "km"),
+            C.georadius(k, "1", "2", "3", "km"),
+            C.georadius(k, "1", "2", "3", "km"; asc=false, withcoord=true, withdist=true, withhash=true, count=3, store=k, storedist=k)]
+        @test filter(!wellformed, cmds) == []
+    end
+
     @testset "connection failures" begin
         socket = FailingAfterWriteIO(true, Ref(false))
         redis = Redis.Client(socket, false, ReentrantLock(), Redis.Future[])
@@ -281,6 +323,18 @@ end
             Redis.set(redis, "scan:key:1", "v1")
             Redis.set(redis, "scan:key:2", "v2")
             @test Set(collect(Redis.Scan(redis, "scan:key:*"))) == Set(["scan:key:1", "scan:key:2"])
+            @test isempty(collect(Redis.Zscan(redis, "scan:missing")))
+            @test isempty(collect(Redis.Sscan(redis, "scan:missing")))
+            @test isempty(collect(Redis.Hscan(redis, "scan:missing")))
+            Redis.zadd(redis, "scan:z", "1", "m1")
+            Redis.sadd(redis, "scan:s", "s1")
+            Redis.hset(redis, "scan:h", "f1", "v1")
+            @test collect(Redis.Zscan(redis, "scan:z", "m*")) == ["m1", "1"]
+            @test collect(Redis.Sscan(redis, "scan:s", "s*")) == ["s1"]
+            @test collect(Redis.Hscan(redis, "scan:h", "f*")) == ["f1", "v1"]
+            @test Redis.zrange(redis, "scan:z", "0", "5") == ["m1"]
+            # every reply above went to its own command
+            @test Redis.get(redis, "scan:key:1") == "v1"
             # cleanup
             Redis.del(redis, "key2")
             Redis.del(redis, "binary-key")
@@ -292,6 +346,9 @@ end
             Redis.del(redis, "unicode:hash")
             Redis.del(redis, "scan:key:1")
             Redis.del(redis, "scan:key:2")
+            Redis.del(redis, "scan:z")
+            Redis.del(redis, "scan:s")
+            Redis.del(redis, "scan:h")
             # batch execution
             batch = Redis.Batch()
             push!(batch, Redis.Commands.set("batchkey1", "v1"))

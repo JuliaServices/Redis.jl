@@ -77,21 +77,28 @@ function del(key::AbstractString)
     return Command{Int}(command)
 end
 
-function scan(cursor::AbstractString="0"; match::AbstractString="")
-    cnt = 2 + (match !== "" ? 2 : 0)
-    command = "*$cnt\r\n\$4\r\nSCAN\r\n\$$(sizeof(cursor))\r\n$cursor\r\n"
-    if !isempty(match)
-        command *= "\$5\r\nMATCH\r\n\$$(sizeof(match))\r\n$match\r\n"
+# encode a command as a RESP array of bulk strings
+function resp(parts::AbstractString...)
+    io = IOBuffer()
+    print(io, '*', length(parts), "\r\n")
+    for part in parts
+        print(io, '$', sizeof(part), "\r\n", part, "\r\n")
     end
-    return Command{Any}(command)
+    return String(take!(io))
 end
+
+# a SCAN-family command; an empty pattern sends no MATCH
+scancommand(match::AbstractString, parts::AbstractString...) =
+    Command{Any}(isempty(match) ? resp(parts...) : resp(parts..., "MATCH", match))
+
+scan(cursor::AbstractString="0"; match::AbstractString="") = scancommand(match, "SCAN", cursor)
 
 function zrange(key::AbstractString, min::AbstractString, max::AbstractString, bylex::Bool=false, useLegacyCommand::Bool=true)
     if useLegacyCommand
         if bylex
             command = "*4\r\n\$11\r\nZRANGEBYLEX\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n"
         else
-            command = "*4\r\n\$14\r\nZRANGEBYSCORE\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n"
+            command = "*4\r\n\$13\r\nZRANGEBYSCORE\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n"
         end
     else
         if bylex
@@ -141,13 +148,8 @@ function zrevrange(key::AbstractString, start::Int, stop::Int; withscores::Bool=
     return Command{Vector{String}}(command)
 end
 
-function zscan(key::AbstractString, cursor::AbstractString="0"; match::AbstractString="")
-    command = "*3\r\n\$5\r\nZSCAN\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(cursor))\r\n$cursor\r\n"
-    if !isempty(match)
-        command *= "\$5\r\nMATCH\r\n\$$(sizeof(match))\r\n$match\r\n"
-    end
-    return Command{Any}(command)
-end
+zscan(key::AbstractString, cursor::AbstractString="0"; match::AbstractString="") =
+    scancommand(match, "ZSCAN", key, cursor)
 
 function xadd(key::AbstractString, id::AbstractString, field::AbstractString, value::AbstractString)
     command = "*5\r\n\$4\r\nXADD\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(id))\r\n$id\r\n\$$(sizeof(field))\r\n$field\r\n\$$(sizeof(value))\r\n$value\r\n"
@@ -324,13 +326,8 @@ function scard(key::AbstractString)
     return Command{Int}(command)
 end
 
-function sscan(key::AbstractString, cursor::AbstractString="0"; match::AbstractString="")
-    command = "*3\r\n\$5\r\nSSCAN\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(cursor))\r\n$cursor\r\n"
-    if !isempty(match)
-        command *= "\$5\r\nMATCH\r\n\$$(sizeof(match))\r\n$match\r\n"
-    end
-    return Command{Any}(command)
-end
+sscan(key::AbstractString, cursor::AbstractString="0"; match::AbstractString="") =
+    scancommand(match, "SSCAN", key, cursor)
 
 function smembers(key::AbstractString)
     command = "*2\r\n\$8\r\nSMEMBERS\r\n\$$(sizeof(key))\r\n$key\r\n"
@@ -382,13 +379,8 @@ function hset(key::AbstractString, field::AbstractString, value::AbstractString)
     return Command{Int}(command)
 end
 
-function hscan(key::AbstractString, cursor::Int64; match::Union{Nothing, AbstractString}=nothing)
-    command = "*3\r\n\$5\r\nHSCAN\r\n\$$(sizeof(key))\r\n$key\r\n\$$(length(string(cursor)))\r\n$cursor\r\n"
-    if match !== nothing
-        command *= "\$5\r\nMATCH\r\n\$$(sizeof(match))\r\n$match\r\n"
-    end
-    return Command{Any}(command)
-end
+hscan(key::AbstractString, cursor::Union{Integer, AbstractString}="0"; match::Union{Nothing, AbstractString}=nothing) =
+    scancommand(something(match, ""), "HSCAN", key, string(cursor))
 
 function rpush(key::AbstractString, value::AbstractString)
     command = "*3\r\n\$5\r\nRPUSH\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(value))\r\n$value\r\n"
@@ -492,10 +484,10 @@ function georadius(key::AbstractString, longitude::AbstractString, latitude::Abs
         command *= "\$5\r\nCOUNT\r\n\$$(length(string(count)))\r\n$count\r\n"
     end
     if store !== nothing
-        command *= "\$5\r\nSTORE\r\n\$$(length(store))\r\n$store\r\n"
+        command *= "\$5\r\nSTORE\r\n\$$(sizeof(store))\r\n$store\r\n"
     end
     if storedist !== nothing
-        command *= "\$9\r\nSTOREDIST\r\n\$$(length(storedist))\r\n$storedist\r\n"
+        command *= "\$9\r\nSTOREDIST\r\n\$$(sizeof(storedist))\r\n$storedist\r\n"
     end
     return Command{Any}(command)
 end
