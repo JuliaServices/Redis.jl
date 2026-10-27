@@ -356,7 +356,11 @@ function start_response_reader!(client::Client)
             @lock client.lock begin
                 client.socket === socket || return
                 if isempty(client.responses)
-                    continue
+                    # A reply no command is waiting for: commands queue their future
+                    # under this lock as they write, so the stream is out of step.
+                    # Drop the connection rather than hand the reply to the next caller.
+                    _mark_closed_locked!(client, socket, RedisError("unexpected reply with no pending command"))
+                    return
                 end
                 fut = popfirst!(client.responses)
             end
