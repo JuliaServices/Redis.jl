@@ -40,6 +40,16 @@ function Base.eof(io::FailingAfterWriteIO)
     throw(ErrorException("tls peek failed (code=1): unexpected EOF"))
 end
 
+# a server that has sent a reply nobody asked for
+mutable struct UnsolicitedReplyIO <: IO
+    open::Bool
+end
+
+Base.isopen(io::UnsolicitedReplyIO) = io.open
+Base.close(io::UnsolicitedReplyIO) = (io.open = false; nothing)
+# yield, so a reader that spins on the unread reply cannot starve the test
+Base.eof(io::UnsolicitedReplyIO) = (yield(); !io.open)
+
 @testset "Redis" begin
     @testset "readresponse!" begin
         mutable struct ChunkedIO <: IO
@@ -288,6 +298,17 @@ end
         end
         @test err isa Redis.RedisConnectionError
         @test !isopen(redis)
+
+        # a reply no command is waiting for closes the connection, rather than
+        # spinning the reader and handing the reply to the next command
+        redis = Redis.Client(UnsolicitedReplyIO(true), false, ReentrantLock(), Redis.Future[])
+        Redis.start_response_reader!(redis)
+        deadline = time() + 5
+        while isopen(redis) && time() < deadline
+            sleep(0.01)
+        end
+        @test !isopen(redis)
+        close(redis)
     end
 
     @testset "Basic connections" begin
