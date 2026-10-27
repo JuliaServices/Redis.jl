@@ -34,8 +34,8 @@ function set(key::AbstractString, value::AbstractString; nx::Bool=false, xx::Boo
     if px > 0
         command *= "\$2\r\nPX\r\n\$$(sizeof(string(px)))\r\n$(string(px))\r\n"
     end
-    # nil when an NX or XX condition is not met
-    return Command{Union{String,Nothing}}(command)
+    # NX and XX reply nil when their condition is not met
+    return nx || xx ? Command{Union{String,Nothing}}(command) : Command{String}(command)
 end
 
 function mset(pairs::Pair{String, String}...)
