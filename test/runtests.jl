@@ -50,6 +50,22 @@ Base.close(io::UnsolicitedReplyIO) = (io.open = false; nothing)
 # yield, so a reader that spins on the unread reply cannot starve the test
 Base.eof(io::UnsolicitedReplyIO) = (yield(); !io.open)
 
+# a socket whose peer has gone: every write fails
+mutable struct BrokenPipeIO <: IO
+    open::Bool
+end
+
+Base.isopen(io::BrokenPipeIO) = io.open
+Base.close(io::BrokenPipeIO) = (io.open = false; nothing)
+Base.write(::BrokenPipeIO, ::Union{String,SubString{String}}) = throw(SystemError("write", Libc.EPIPE))
+
+function Base.eof(io::BrokenPipeIO)
+    while io.open
+        sleep(0.001)
+    end
+    return true
+end
+
 @testset "Redis" begin
     @testset "readresponse!" begin
         mutable struct ChunkedIO <: IO
@@ -308,6 +324,17 @@ Base.eof(io::UnsolicitedReplyIO) = (yield(); !io.open)
             sleep(0.01)
         end
         @test !isopen(redis)
+        close(redis)
+
+        # a failed write, and a failed reconnect, are connection errors too
+        options = Redis.ConnectionOptions("127.0.0.1", 1, nothing, 0, false)  # nothing listens on port 1
+        redis = Redis.Client(BrokenPipeIO(true), false, ReentrantLock(), Redis.Future[], options, false)
+        Redis.start_response_reader!(redis)
+        err = try Redis.get(redis, "missing"); nothing catch e; e end
+        @test err isa Redis.RedisConnectionError && err.cause isa SystemError
+        @test !isopen(redis)
+        err = try Redis.get(redis, "missing"); nothing catch e; e end
+        @test err isa Redis.RedisConnectionError && err.cause !== nothing
         close(redis)
     end
 

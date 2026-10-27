@@ -213,6 +213,21 @@ function writemessage(socket::IO, message)
     flush(socket)
 end
 
+# Reconnect if needed, then write `bytes`; the caller holds `client.lock`. A
+# failure closes the connection and throws a RedisConnectionError, the same
+# error a command gets when the connection drops while it waits for a reply.
+function _write_locked!(client::Client, bytes)
+    try
+        _ensure_connected_locked!(client)
+        writemessage(client.socket, bytes)
+    catch e
+        e isa RedisConnectionError && rethrow()
+        _mark_closed_locked!(client, client.socket, e)
+        throw(RedisConnectionError("redis connection failed", e))
+    end
+    return
+end
+
 # execution flow is:
 # take client lock
 # write command to socket
@@ -224,13 +239,7 @@ end
 function execute(client::Client, command::Command{T}) where {T}
     fut = _response_future(T)
     @lock client.lock begin
-        _ensure_connected_locked!(client)
-        try
-            writemessage(client.socket, command.cmd)
-        catch e
-            _mark_closed_locked!(client, client.socket, e)
-            rethrow()
-        end
+        _write_locked!(client, command.cmd)
         push!(client.responses, fut)
     end
     return _future_wait_typed(fut)
@@ -273,13 +282,7 @@ function execute(client::Client, batch::Batch)
         batch.nbuffered = 0
     end
     @lock client.lock begin
-        _ensure_connected_locked!(client)
-        try
-            writemessage(client.socket, cmds)
-        catch e
-            _mark_closed_locked!(client, client.socket, e)
-            rethrow()
-        end
+        _write_locked!(client, cmds)
         append!(client.responses, futs)
     end
     err = CompositeException()
@@ -306,13 +309,7 @@ function execute(client::Client, cmds::Command...)
     cmdbytes = take!(commands)
     local futs
     @lock client.lock begin
-        _ensure_connected_locked!(client)
-        try
-            writemessage(client.socket, cmdbytes)
-        catch e
-            _mark_closed_locked!(client, client.socket, e)
-            rethrow()
-        end
+        _write_locked!(client, cmdbytes)
         len = length(client.responses)
         for cmd in cmds
             push!(client.responses, _response_future(resulttype(cmd)))
