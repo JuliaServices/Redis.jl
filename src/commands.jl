@@ -34,7 +34,8 @@ function set(key::AbstractString, value::AbstractString; nx::Bool=false, xx::Boo
     if px > 0
         command *= "\$2\r\nPX\r\n\$$(sizeof(string(px)))\r\n$(string(px))\r\n"
     end
-    return Command{String}(command)
+    # NX and XX reply nil when their condition is not met
+    return nx || xx ? Command{Union{String,Nothing}}(command) : Command{String}(command)
 end
 
 function mset(pairs::Pair{String, String}...)
@@ -419,7 +420,8 @@ end
 
 function geodist(key::AbstractString, member1::AbstractString, member2::AbstractString, unit::AbstractString="m")
     command = "*5\r\n\$7\r\nGEODIST\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(member1))\r\n$member1\r\n\$$(sizeof(member2))\r\n$member2\r\n\$$(sizeof(unit))\r\n$unit\r\n"
-    return Command{String}(command)
+    # nil when either member is missing
+    return Command{Union{String,Nothing}}(command)
 end
 
 function geohash(key::AbstractString, members::AbstractString...)
