@@ -401,6 +401,14 @@ end
             Redis.set(redis, "scan:key:1", "v1")
             Redis.set(redis, "scan:key:2", "v2")
             @test Set(collect(Redis.Scan(redis, "scan:key:*"))) == Set(["scan:key:1", "scan:key:2"])
+            # the iterators ask for ~1000 slots per call rather than the server's 10
+            raw(T, args...) = Redis.execute(redis, Redis.Commands.Command{T}(Redis.Commands.resp(args...)))
+            raw(Int, "EVAL", "for i = 1, 5000 do redis.call('SET', 'scan:count:' .. i, 'x') end return 1", "0")
+            raw(String, "CONFIG", "RESETSTAT")
+            @test length(Set(Redis.Scan(redis, "scan:count:*"))) == 5000
+            scans = match(r"cmdstat_scan:calls=(\d+)", raw(String, "INFO", "commandstats"))
+            @test parse(Int, scans[1]) <= 20
+            raw(Int, "EVAL", "for i = 1, 5000 do redis.call('DEL', 'scan:count:' .. i) end return 1", "0")
             @test isempty(collect(Redis.Zscan(redis, "scan:missing")))
             @test isempty(collect(Redis.Sscan(redis, "scan:missing")))
             @test isempty(collect(Redis.Hscan(redis, "scan:missing")))
