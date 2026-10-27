@@ -378,6 +378,37 @@ end
                 true
             end
             @test_throws Redis.RedisConnectionError Redis.get(redis, "key2")
+
+            # a message whose handler throws stays pending; once idle it is
+            # claimed and retried, and new messages keep flowing meanwhile
+            redis = Redis.connect("127.0.0.1", 6379)
+            config = Redis.ConsumerGroupConfig(; block_time=100, claim_min_idle_time=50)
+            group = Redis.ConsumerGroup(redis, "retry-group", "retry-stream", "consumer-1"; config)
+            delivered = Channel{String}(Inf)
+            failed = Ref(false)
+            consumer = Redis.startConsumer!(group; pending_check_interval=0) do event
+                put!(delivered, event.fields["n"])
+                failed[] || (failed[] = true; error("transient failure"))
+                return true
+            end
+            Redis.xadd(redis, "retry-stream", "*", "n", "1")
+            seen = String[]
+            deadline = time() + 15
+            while time() < deadline && length(seen) < 3
+                if isready(delivered)
+                    push!(seen, take!(delivered))
+                    # added after the failure, so it is only seen if reading continues
+                    length(seen) == 1 && Redis.xadd(redis, "retry-stream", "*", "n", "2")
+                else
+                    sleep(0.05)
+                end
+            end
+            Redis.stop!(consumer)
+            @test seen == ["1", "2", "1"] || seen == ["1", "1", "2"]
+            @test consumer.stats.last_error === nothing
+            sleep(0.3)  # let the consumer's blocking read finish before closing
+            Redis.del(redis, "retry-stream")
+            close(redis)
         end
         Harbor.with_container("redis"; wait_strategy=(pattern="Ready to accept connections tcp",), ports=Dict(6379 => 6379), command=["redis-server", "--requirepass", "yourpassword"]) do _
             redis = Redis.connect("127.0.0.1", 6379; password="yourpassword")
