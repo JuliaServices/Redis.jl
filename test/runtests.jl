@@ -211,6 +211,27 @@ end
             @test read_replies(IOBuffer("\$-1\r\n*-1\r\n\$0\r\n\r\n*0\r\n"), 4; bufsize=1) ==
                   Any[nothing, nothing, "", []]
         end
+
+        @testset "malformed replies stay cheap" begin
+            parse(wire) = Redis.readresponse!(_ -> nothing, IOBuffer(wire), Vector{UInt8}(undef, 64), 1, 0, false)
+            # a huge array count followed by EOF allocates nothing up front
+            @test_throws EOFError parse("*10\r\n:1\r\n")
+            allocated = @allocated try parse("*10000000\r\n:1\r\n") catch end
+            @test allocated < 1_000_000
+            # nesting is bounded below what a reader task's stack can hold
+            nested(depth) = repeat("*1\r\n", depth) * ":1\r\n"
+            @test fetch(Threads.@spawn parse(nested(Redis.MAX_NESTING))) isa Tuple
+            @test_throws Redis.RedisError parse(nested(Redis.MAX_NESTING + 1))
+            # an unknown reply type is an error, and nothing is written to stdout
+            printed = mktemp() do path, io
+                redirect_stdout(io) do
+                    @test_throws Redis.RedisError parse("_\r\n")
+                end
+                close(io)
+                read(path, String)
+            end
+            @test isempty(printed)
+        end
     end
 
     @testset "command encoding" begin
