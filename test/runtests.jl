@@ -277,6 +277,15 @@ end
             redis = Redis.connect("127.0.0.1", 6379)
             Redis.set(redis, "key2", "value2")
             @test Redis.get(redis, "key2") == "value2"
+            # SET NX/XX and GEODIST reply nil when their condition is not met
+            @test Redis.set(redis, "nx-key", "first"; nx=true) == "OK"
+            @test Redis.set(redis, "nx-key", "second"; nx=true) === nothing
+            @test Redis.set(redis, "xx-missing-key", "value"; xx=true) === nothing
+            @test Redis.get(redis, "nx-key") == "first"
+            @test Redis.geoadd(redis, "geo-key", "13.361389", "38.115556", "Palermo") == 1
+            @test Redis.geodist(redis, "geo-key", "Palermo", "Nowhere") === nothing
+            Redis.del(redis, "nx-key")
+            Redis.del(redis, "geo-key")
             binary_value = "flight\r\ncontinuation\0" * String(UInt8[0xff])
             @test Redis.set(redis, "binary-key", binary_value) == "OK"
             @test Redis.get(redis, "binary-key") == binary_value
