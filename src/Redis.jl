@@ -444,9 +444,13 @@ function getmoredata!(socket, buf, start, pos, len)
     return start, pos, len
 end
 
+# Deepest array nesting accepted in a reply. Real replies nest a few levels;
+# the bound keeps a corrupt reply from overflowing the reader task's stack.
+const MAX_NESTING = 256
+
 # read a single redis response from buf (filling buf from socket as needed)
 # once a concrete value has been parsed from the response, apply f
-@inline function readresponse!(f, socket::IO, buf=Vector{UInt8}(undef, 4096), pos=1, len=0, debug=true)
+@inline function readresponse!(f, socket::IO, buf=Vector{UInt8}(undef, 4096), pos=1, len=0, debug=true, depth=0)
     # pos is the byte position in buf we read from next
     # len is the last byte position in buf of valid data to read
     GC.@preserve buf begin
@@ -506,34 +510,20 @@ end
                     f(nothing)
                     return pos, len
                 end
-                plc = PosLenClosure(socket, buf, pos, len, debug)
-                f(map(plc, 1:nelem))
-                return plc.pos, plc.len
+                depth < MAX_NESTING || throw(RedisError("RESP arrays nested deeper than $MAX_NESTING levels"))
+                # grown as elements arrive, so a corrupt count allocates nothing up front
+                values = Any[]
+                for _ in 1:nelem
+                    pos, len = readresponse!(x -> push!(values, x), socket, buf, pos, len, debug, depth + 1)
+                end
+                f(values)
+                return pos, len
             else
-                @error "dumping redis buffer" pos = pos len = len
-                println(String(buf))
-                close(socket)
                 throw(RedisError("Unexpected RESP type: '$(Char(type))'"))
             end
         end
     end
     throw(EOFError())
-end
-
-mutable struct PosLenClosure{T<:IO}
-    const socket::T
-    const buf::Vector{UInt8}
-    pos::Int
-    len::Int
-    const debug::Bool
-end
-
-function (f::PosLenClosure{T})(i) where {T}
-    local x
-    f.pos, f.len = readresponse!(f.socket, f.buf, f.pos, f.len, f.debug) do y
-        x = y
-    end
-    return x
 end
 
 function Commands.set(client::Client, key::AbstractString, value::AbstractString; nx::Bool=false, xx::Bool=false, ex::Int=0, px::Int=0)
