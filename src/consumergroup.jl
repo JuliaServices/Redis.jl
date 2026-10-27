@@ -378,15 +378,15 @@ function claim_idle_messages!(group::ConsumerGroup)
         isempty(details) && continue
         idle_ids = String[]
         for detail in details
+            # each entry is [id, consumer, milliseconds idle, delivery count]
             (!isa(detail, Vector) || length(detail) < 3) && continue
-            idle_time = detail[2]  # Milliseconds idle
-            idle_time >= group.config.claim_min_idle_time && push!(idle_ids, string(detail[1]))  # Message ID
+            detail[3] >= group.config.claim_min_idle_time && push!(idle_ids, string(detail[1]))
         end
         if !isempty(idle_ids)
             try
                 result = xclaim(
                     group.client, stream, group.name, group.consumer_name,
-                    string(group.config.claim_min_idle_time), idle_ids...
+                    group.config.claim_min_idle_time, idle_ids...
                 )
                 events = parse_claim_results(stream, result)
                 append!(claimed_events, events)
