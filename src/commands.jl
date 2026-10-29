@@ -342,7 +342,8 @@ end
 
 function exec()
     command = "*1\r\n\$4\r\nEXEC\r\n"
-    return Command{Vector{Any}}(command)
+    # nil when a WATCHed key changed and the server aborted the transaction
+    return Command{Union{Nothing,Vector{Any}}}(command)
 end
 
 function discard()
