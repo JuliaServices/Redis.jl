@@ -73,6 +73,10 @@ struct ConnectionOptions
     tls::Bool
 end
 
+# keeps the password out of logs and error reports that print a client
+Base.show(io::IO, o::ConnectionOptions) = print(io, "Redis.ConnectionOptions(", repr(o.host), ", ", o.port, ", ",
+    o.password === nothing ? "nothing" : "\"<redacted>\"", ", ", o.db, ", ", o.tls, ")")
+
 mutable struct Client{S <: IO}
     socket::S
     debug::Bool
@@ -140,8 +144,8 @@ function _close_quietly(socket)
     return
 end
 
+# runs AUTH and SELECT while connecting; the command is not logged because AUTH carries the password
 function _execute_direct(socket::IO, command::Command{T}, debug::Bool=false) where {T}
-    debug && @info "Redis startup command: $(command.cmd)"
     writemessage(socket, command.cmd)
     local result
     readresponse!(socket, Vector{UInt8}(undef, 4096), 1, 0, debug) do value
