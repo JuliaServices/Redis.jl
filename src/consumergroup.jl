@@ -370,30 +370,32 @@ pending_details(group::ConsumerGroup; count=100) = PendingDetailsIterator(group,
 """
     claim_idle_messages!(group::ConsumerGroup) -> Vector{StreamEvent}
 
-Claim messages that have been idle longer than the configured threshold.
+Claim for this consumer up to 100 messages per stream that some consumer of the
+group read but has not acknowledged for `claim_min_idle_time` milliseconds,
+including messages held by a consumer that has stopped. Uses `XAUTOCLAIM`
+(Redis 6.2 or later).
 """
 function claim_idle_messages!(group::ConsumerGroup)
     claimed_events = StreamEvent[]
-    for (stream, details) in pending_details(group; count=100)
-        isempty(details) && continue
-        idle_ids = String[]
-        for detail in details
-            # each entry is [id, consumer, milliseconds idle, delivery count]
-            (!isa(detail, Vector) || length(detail) < 3) && continue
-            detail[3] >= group.config.claim_min_idle_time && push!(idle_ids, string(detail[1]))
-        end
-        if !isempty(idle_ids)
-            try
-                result = xclaim(
-                    group.client, stream, group.name, group.consumer_name,
-                    group.config.claim_min_idle_time, idle_ids...
-                )
-                events = parse_claim_results(stream, result)
-                append!(claimed_events, events)
-                @info "Claimed $(length(events)) idle messages from stream $(stream)"
-            catch e
-                @error "Failed to claim idle messages" stream=stream count=length(idle_ids) exception=e
+    for stream in group.streams
+        try
+            # each call claims up to 100 idle entries; follow the cursor until one
+            # does, or the whole pending list has been scanned
+            cursor = "0-0"
+            while true
+                reply = xautoclaim(group.client, stream, group.name, group.consumer_name,
+                                   group.config.claim_min_idle_time, cursor)
+                cursor = string(reply[1])
+                events = parse_claim_results(stream, reply[2])
+                if !isempty(events)
+                    append!(claimed_events, events)
+                    @info "Claimed $(length(events)) idle messages from stream $(stream)"
+                    break
+                end
+                cursor == "0-0" && break
             end
+        catch e
+            @error "Failed to claim idle messages" stream=stream exception=e
         end
     end
     return claimed_events
