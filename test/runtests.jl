@@ -520,6 +520,14 @@ end
             close(redis)
         end
         Harbor.with_container("redis"; wait_strategy=(pattern="Ready to accept connections tcp",), ports=Dict(6379 => 6379), command=["redis-server", "--requirepass", "yourpassword"]) do _
+            # the password appears neither in debug logs nor when the client is printed
+            logged = IOBuffer()
+            redis = Base.CoreLogging.with_logger(Base.CoreLogging.SimpleLogger(logged)) do
+                Redis.connect("127.0.0.1", 6379; password="yourpassword", debug=true)
+            end
+            @test !occursin("yourpassword", String(take!(logged)))
+            @test !occursin("yourpassword", sprint(show, redis))
+            close(redis)
             redis = Redis.connect("127.0.0.1", 6379; password="yourpassword")
             Redis.set(redis, "key1", "value1")
             @test Redis.get(redis, "key1") == "value1"
