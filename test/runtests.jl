@@ -523,6 +523,8 @@ end
             dead = Redis.ConsumerGroup(redis, "claim-group", "claim-stream", "dead-consumer"; config)
             Redis.xadd(redis, "claim-stream", "*", "n", "orphan")
             @test length(Redis.read_events!(Redis.StreamConsumer(dead))) == 1
+            (_, details), = Redis.pending_details(dead)
+            @test details[1][2] == "dead-consumer"
             live = Redis.ConsumerGroup(redis, "claim-group", "claim-stream", "live-consumer"; config)
             delivered = Channel{String}(Inf)
             consumer = Redis.startConsumer!(live; pending_check_interval=0) do event
