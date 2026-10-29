@@ -1,6 +1,6 @@
 module Commands
 
-export Command, resulttype, auth, select, set, mset, append, incrby, get, mget, del, scan, zrange, zadd, zcard, zrem, zrevrangebyscore, zremrangebyrank, zrevrange, zscan, xadd, xdel, xrange, xtrim, xgroup_create, xgroup_destroy, xgroup_setid, xgroup_delconsumer, xreadgroup, xack, xpending, xclaim, xinfo_stream, xinfo_groups, xinfo_consumers, sadd, sismember, srem, scard, sscan, smembers, multi, exec, discard, expire, publish, hdel, hget, hlen, hset, hscan, rpush, lindex, lpush, ltrim, lrange, lrem, geoadd, geodist, geohash, geopos, geosearch, georadius
+export Command, resulttype, auth, select, set, mset, append, incrby, get, mget, del, scan, zrange, zadd, zcard, zrem, zrevrangebyscore, zremrangebyrank, zrevrange, zscan, xadd, xdel, xrange, xtrim, xgroup_create, xgroup_destroy, xgroup_setid, xgroup_delconsumer, xreadgroup, xack, xpending, xclaim, xautoclaim, xinfo_stream, xinfo_groups, xinfo_consumers, sadd, sismember, srem, scard, sscan, smembers, multi, exec, discard, expire, publish, hdel, hget, hlen, hset, hscan, rpush, lindex, lpush, ltrim, lrange, lrem, geoadd, geodist, geohash, geopos, geosearch, georadius
 
 # T is the return type of the command
 struct Command{T}
@@ -291,6 +291,11 @@ function xclaim(stream::AbstractString, group::AbstractString, consumer::Abstrac
 
     return Command{Any}(command)
 end
+
+# claim entries of `group` idle at least `min_idle_time` ms, whichever consumer holds them,
+# scanning the pending list from `start`; replies [next start, entries, deleted ids]
+xautoclaim(stream::AbstractString, group::AbstractString, consumer::AbstractString, min_idle_time::Int, start::AbstractString="0-0") =
+    Command{Vector{Any}}(resp("XAUTOCLAIM", stream, group, consumer, string(min_idle_time), start))
 
 function xinfo_stream(stream::AbstractString)
     command = "*3\r\n\$5\r\nXINFO\r\n\$6\r\nSTREAM\r\n\$$(sizeof(stream))\r\n$stream\r\n"

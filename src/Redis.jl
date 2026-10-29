@@ -978,6 +978,12 @@ function Commands.xclaim(client::Client, stream::AbstractString, group::Abstract
     return execute(client, command)
 end
 
+function Commands.xautoclaim(client::Client, stream::AbstractString, group::AbstractString, consumer::AbstractString, min_idle_time::Int, start::AbstractString="0-0")
+    command = Commands.xautoclaim(stream, group, consumer, min_idle_time, start)
+    client.debug && @info "XAUTOCLAIM Command: $(command.cmd)"
+    return execute(client, command)
+end
+
 function Commands.xinfo_stream(client::Client, stream::AbstractString)
     command = Commands.xinfo_stream(stream)
     client.debug && @info "XINFO_STREAM Command: $(command.cmd)"

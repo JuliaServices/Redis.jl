@@ -517,6 +517,29 @@ end
             @test consumer.stats.last_error === nothing
             sleep(0.3)  # let the consumer's blocking read finish before closing
             Redis.del(redis, "retry-stream")
+
+            # a message read by a consumer that stopped without acknowledging it is
+            # claimed and processed by another consumer of the group once idle
+            dead = Redis.ConsumerGroup(redis, "claim-group", "claim-stream", "dead-consumer"; config)
+            Redis.xadd(redis, "claim-stream", "*", "n", "orphan")
+            @test length(Redis.read_events!(Redis.StreamConsumer(dead))) == 1
+            (_, details), = Redis.pending_details(dead)
+            @test details[1][2] == "dead-consumer"
+            live = Redis.ConsumerGroup(redis, "claim-group", "claim-stream", "live-consumer"; config)
+            delivered = Channel{String}(Inf)
+            consumer = Redis.startConsumer!(live; pending_check_interval=0) do event
+                put!(delivered, event.fields["n"])
+                return true
+            end
+            deadline = time() + 15
+            while time() < deadline && !isready(delivered)
+                sleep(0.05)
+            end
+            Redis.stop!(consumer)
+            @test isready(delivered) && take!(delivered) == "orphan"
+            sleep(0.3)
+            @test Redis.xpending(redis, "claim-stream", "claim-group")[1] == 0
+            Redis.del(redis, "claim-stream")
             close(redis)
         end
         Harbor.with_container("redis"; wait_strategy=(pattern="Ready to accept connections tcp",), ports=Dict(6379 => 6379), command=["redis-server", "--requirepass", "yourpassword"]) do _
