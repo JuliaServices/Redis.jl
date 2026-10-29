@@ -80,10 +80,21 @@ mutable struct Client{S <: IO}
     responses::Vector{Future} # holds futures for responses
     options::Union{Nothing,ConnectionOptions}
     closed::Bool
+    multi::Bool # a MULTI was written on this connection and no EXEC or DISCARD since
 end
 
 Client(socket::S, debug::Bool, lock::ReentrantLock, responses::Vector{Future}) where {S<:IO} =
-    Client{S}(socket, debug, lock, responses, nothing, false)
+    Client{S}(socket, debug, lock, responses, nothing, false, false)
+Client(socket::S, debug::Bool, lock::ReentrantLock, responses::Vector{Future}, options, closed::Bool) where {S<:IO} =
+    Client{S}(socket, debug, lock, responses, options, closed, false)
+
+const MULTI_CMD = Commands.multi().cmd
+const EXEC_CMD = Commands.exec().cmd
+const DISCARD_CMD = Commands.discard().cmd
+_ends_multi(cmd::AbstractString) = cmd == EXEC_CMD || cmd == DISCARD_CMD
+
+# Whether MULTI is open on the connection after `cmd` is written.
+_multi_after(open::Bool, cmd::AbstractString) = cmd == MULTI_CMD || (open && !_ends_multi(cmd))
 
 @inline _response_future(::Type{T}) where {T} = Future{Union{T, Exception}}()
 
@@ -189,6 +200,12 @@ function _ensure_connected_locked!(client::Client)
     client.closed = true
     _fail_pending_locked!(client, RedisConnectionError("redis connection closed before reconnect"))
     _close_quietly(client.socket)
+    if client.multi
+        # The server discarded the transaction with the connection. Fail this
+        # command rather than run it, and the rest of the transaction, outside it.
+        client.multi = false
+        throw(RedisConnectionError("redis connection lost inside MULTI; the server discarded the transaction"))
+    end
     socket = _open_socket(options, client.debug)
     client.socket = socket
     client.closed = false
@@ -239,10 +256,24 @@ end
 function execute(client::Client, command::Command{T}) where {T}
     fut = _response_future(T)
     @lock client.lock begin
+        if client.multi && !(String <: T) && !_ends_multi(command.cmd)
+            # refused before it is queued: the server would answer QUEUED, which is not a T
+            throw(ArgumentError("inside MULTI the server answers QUEUED, not a $T; send the transaction in one call: execute(client, multi(), commands..., exec())"))
+        end
         _write_locked!(client, command.cmd)
+        client.multi = _multi_after(client.multi, command.cmd)
         push!(client.responses, fut)
     end
     return _future_wait_typed(fut)
+end
+
+# In a pipeline the commands between MULTI and EXEC are answered QUEUED and EXEC
+# carries their replies. A QUEUED string for a command whose result type excludes
+# strings can only be that status reply.
+@inline function _future_wait_pipelined(fut::Future{Union{Exception, T}}) where {T}
+    result = _future_wait(fut)
+    result == "QUEUED" && return result
+    return _coerce_result(T, result)::T
 end
 
 mutable struct Batch
@@ -251,15 +282,18 @@ mutable struct Batch
     const futures::Vector{Future}
     nbuffered::Int
     last_flush::DateTime
+    multi::Union{Nothing,Bool} # whether the buffered commands leave MULTI open; nothing if they don't touch it
 end
 
-Batch() = Batch(ReentrantLock(), IOBuffer(), Future[], 0, Dates.now())
+Batch() = Batch(ReentrantLock(), IOBuffer(), Future[], 0, Dates.now(), nothing)
 
 function Base.push!(batch::Batch, cmd::Command{T}) where {T}
     @lock batch.lock begin
         write(batch.commands, cmd.cmd)
         push!(batch.futures, _response_future(T))
         batch.nbuffered += 1
+        cmd.cmd == MULTI_CMD && (batch.multi = true)
+        _ends_multi(cmd.cmd) && (batch.multi = false)
     end
     return batch
 end
@@ -275,20 +309,24 @@ Base.length(batch::Batch) = @lock batch.lock batch.nbuffered
 function execute(client::Client, batch::Batch)
     local cmds::Vector{UInt8}
     local futs::Vector{Future}
+    local multi::Union{Nothing,Bool}
     @lock batch.lock begin
         batch.last_flush = Dates.now()
         cmds = take!(batch.commands)
         futs = splice!(batch.futures, 1:batch.nbuffered)
         batch.nbuffered = 0
+        multi = batch.multi
+        batch.multi = nothing
     end
     @lock client.lock begin
         _write_locked!(client, cmds)
+        multi === nothing || (client.multi = multi)
         append!(client.responses, futs)
     end
     err = CompositeException()
     results = map(futs) do fut
         try
-            return _future_wait_typed(fut)
+            return _future_wait_pipelined(fut)
         catch e
             push!(err, e)
             return nothing
@@ -312,6 +350,7 @@ function execute(client::Client, cmds::Command...)
         _write_locked!(client, cmdbytes)
         len = length(client.responses)
         for cmd in cmds
+            client.multi = _multi_after(client.multi, cmd.cmd)
             push!(client.responses, _response_future(resulttype(cmd)))
         end
         # make a copy of our cmd futures to wait on
@@ -320,7 +359,7 @@ function execute(client::Client, cmds::Command...)
     err = CompositeException()
     results = map(futs) do fut
         try
-            return _future_wait_typed(fut)
+            return _future_wait_pipelined(fut)
         catch e
             push!(err, e)
             return nothing

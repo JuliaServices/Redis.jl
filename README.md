@@ -35,8 +35,21 @@ push!(batch, Redis.Commands.set("a", "1"))
 push!(batch, Redis.Commands.get("a"))
 Redis.execute(client, batch)
 
+# a transaction in one call: queued commands reply "QUEUED", EXEC returns their results
+C = Redis.Commands
+Redis.execute(client, C.multi(), C.incrby("n", 1), C.get("n"), C.exec())  # ["OK", "QUEUED", "QUEUED", Any[1, "1"]]
+
 close(client)
 ```
+
+MULTI is state of the connection, so a client shared by several tasks should send
+each transaction in one `execute` call as above. Sent one command at a time
+(`Redis.multi(client)`, commands, `Redis.exec(client)`), a command whose result is
+not a string is refused with an `ArgumentError`, because the server only answers
+`QUEUED`. If the connection drops inside MULTI, the server discards the
+transaction and the next command throws `RedisConnectionError` instead of
+reconnecting and running outside it. `Redis.exec` returns `nothing` when a
+`WATCH`ed key changed.
 
 Sorted sets, streams and consumer groups, sets, hashes, lists, geo commands, and
 transactions are supported; see `src/commands.jl` for the full surface.

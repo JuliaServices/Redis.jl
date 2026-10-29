@@ -456,6 +456,38 @@ end
             end
             @test_throws Redis.RedisConnectionError Redis.get(redis, "key2")
 
+            # transactions
+            redis = Redis.connect("127.0.0.1", 6379)
+            C = Redis.Commands
+            # in one call, commands of any result type are queued and EXEC returns their replies
+            @test Redis.execute(redis, C.multi(), C.incrby("tx:n", 5), C.mget("tx:n"), C.exec()) ==
+                  ["OK", "QUEUED", "QUEUED", Any[5, Any["5"]]]
+            # one at a time, a command whose result can't be QUEUED is refused before it is sent
+            @test Redis.multi(redis) == "OK"
+            @test Redis.set(redis, "tx:s", "v") == "QUEUED"
+            @test_throws ArgumentError Redis.incrby(redis, "tx:n", 1)
+            @test Redis.exec(redis) == ["OK"]
+            @test Redis.get(redis, "tx:n") == "5"
+            # a connection lost inside MULTI fails the next command rather than run it
+            # outside the transaction; the command after that reconnects
+            @test Redis.multi(redis) == "OK"
+            @test Redis.set(redis, "tx:a", "1") == "QUEUED"
+            close(redis.socket)
+            @test_throws Redis.RedisConnectionError Redis.set(redis, "tx:b", "2")
+            @test Redis.get(redis, "tx:b") === nothing
+            @test Redis.get(redis, "tx:a") === nothing
+            # EXEC replies nil when a WATCHed key changed
+            other = Redis.connect("127.0.0.1", 6379)
+            @test Redis.execute(redis, C.Command{String}(C.resp("WATCH", "tx:w"))) == "OK"
+            Redis.set(other, "tx:w", "changed")
+            @test Redis.multi(redis) == "OK"
+            @test Redis.set(redis, "tx:w", "mine") == "QUEUED"
+            @test Redis.exec(redis) === nothing
+            @test Redis.get(redis, "tx:w") == "changed"
+            foreach(k -> Redis.del(redis, k), ("tx:n", "tx:s", "tx:w"))
+            close(other)
+            close(redis)
+
             # a message whose handler throws stays pending; once idle it is
             # claimed and retried, and new messages keep flowing meanwhile
             redis = Redis.connect("127.0.0.1", 6379)
