@@ -136,7 +136,8 @@ end
 end
 
 function connectsocket(host::AbstractString, port::Integer; tls::Bool=false)
-    address = string(host, ":", Int(port))
+    # an IPv6 literal is bracketed so its colons are not read as the port separator
+    address = occursin(':', host) && !startswith(host, '[') ? string('[', host, "]:", Int(port)) : string(host, ":", Int(port))
     return if tls
         Reseau.TLS.connect(address; server_name=String(host))
     else
