@@ -105,7 +105,7 @@ function zrange(key::AbstractString, min::AbstractString, max::AbstractString, b
         if bylex
             command = "*5\r\n\$6\r\nZRANGE\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n\$5\r\nBYLEX\r\n"
         else
-            command = "*4\r\n\$6\r\nZRANGE\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n"
+            command = "*5\r\n\$6\r\nZRANGE\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(min))\r\n$min\r\n\$$(sizeof(max))\r\n$max\r\n\$7\r\nBYSCORE\r\n"
         end
     end
     return Command{Vector{String}}(command)
