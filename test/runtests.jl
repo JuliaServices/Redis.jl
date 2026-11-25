@@ -419,6 +419,13 @@ end
             @test collect(Redis.Sscan(redis, "scan:s", "s*")) == ["s1"]
             @test collect(Redis.Hscan(redis, "scan:h", "f*")) == ["f1", "v1"]
             @test Redis.zrange(redis, "scan:z", "0", "5") == ["m1"]
+            # min and max are scores whether or not the legacy command is used
+            Redis.zadd(redis, "scan:z", "20", "m20")
+            Redis.zadd(redis, "scan:z", "30", "m30")
+            for legacy in (true, false)
+                @test Redis.zrange(redis, "scan:z", "15", "25", false, legacy) == ["m20"]
+                @test Redis.zrange(redis, "scan:z", "0", "1", false, legacy) == ["m1"]
+            end
             # every reply above went to its own command
             @test Redis.get(redis, "scan:key:1") == "v1"
             # cleanup
