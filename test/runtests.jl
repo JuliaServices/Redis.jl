@@ -338,6 +338,21 @@ end
         close(redis)
     end
 
+    @testset "IPv6 literal hosts" begin
+        listener = try Redis.Reseau.TCP.listen("tcp", "[::1]:0") catch; nothing end
+        if listener === nothing
+            @test_skip "no IPv6 loopback"
+        else
+            port = Int(Redis.Reseau.TCP.addr(listener).port)
+            for host in ("::1", "[::1]")
+                redis = Redis.connect(host, port)
+                @test isopen(redis)
+                close(redis)
+            end
+            close(listener)
+        end
+    end
+
     @testset "Basic connections" begin
       if !DOCKER
         @test_skip "server-backed tests (docker unavailable)"
