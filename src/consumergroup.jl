@@ -26,7 +26,7 @@ Configuration for consumer group behavior.
 - `block_time::Int = 1000`: Milliseconds to block when waiting for new messages
 - `batch_size::Int = 10`: Maximum number of messages to read in one operation
 - `claim_min_idle_time::Int = 60000`: Milliseconds before a message can be claimed by another consumer
-- `max_retries::Int = 3`: Maximum number of processing attempts before giving up
+- `max_retries::Int = 3`: Times a consumer retries a message whose handler throws (each retry comes when the message is claimed again after `claim_min_idle_time`) before giving up on it, acknowledging it when `auto_ack` is set
 - `auto_ack::Bool = true`: Whether to automatically acknowledge successfully processed messages
 """
 Base.@kwdef struct ConsumerGroupConfig
@@ -421,15 +421,16 @@ function parse_claim_results(stream::String, result)
 end
 
 """
-    startConsumer!(group::ConsumerGroup, event_handler::Function; 
-           error_handler=nothing, before_start=nothing) -> StreamConsumer
+    startConsumer!(group::ConsumerGroup, event_handler::Function;
+           isdone=nothing, error_handler=nothing, pending_check_interval=30) -> StreamConsumer
 
 Start a consumer for the group in a background task, returning a StreamConsumer instance.
 
 # Arguments
 - `event_handler`: Function called for each event. Should return `true` to ACK, `false` to skip ACK, or throw to retry
+- `isdone`: Optional zero-argument function; the consumer stops once it returns `true`
 - `error_handler`: Optional function called on errors with signature `(error, event)`
-- `before_start`: Optional function called before starting consumption
+- `pending_check_interval`: Seconds between passes that claim idle messages with `claim_idle_messages!`
 
 # Event Handler
 The event handler receives a `StreamEvent` and should:
@@ -551,12 +552,11 @@ function process_events!(consumer::StreamConsumer, events::Vector{StreamEvent}, 
 end
 
 """
-    stop!(consumer::StreamConsumer; timeout=10.0) -> Bool
+    stop!(consumer::StreamConsumer)
 
-Stop the consumer background task gracefully.
-
-# Arguments
-- `timeout`: Maximum seconds to wait for the consumer to stop
+Ask the consumer's background task to stop, and return without waiting for it.
+The task finishes its current read, which can block for up to `block_time`
+milliseconds, handles any events that read returned, and then exits.
 """
 function stop!(consumer::StreamConsumer)
     state = @atomicswap consumer.state = :closed
