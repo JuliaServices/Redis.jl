@@ -300,6 +300,15 @@ end
             C.georadius(k, "1", "2", "3", "km"),
             C.georadius(k, "1", "2", "3", "km"; asc=false, withcoord=true, withdist=true, withhash=true, count=3, store=k, storedist=k)]
         @test filter(!wellformed, cmds) == []
+        # commands that take many arguments are built in memory linear in their size
+        many = ["key:$i" for i in 1:10_000]
+        allocs(build) = (build(); @allocated build())
+        for build in (() -> C.mget(many...), () -> C.mset((k => k for k in many)...), () -> C.xack(k, k, many...),
+                      () -> C.xclaim(k, k, k, 100, many...; idle=1, justid=true), () -> C.geohash(k, many...), () -> C.geopos(k, many...))
+            cmd = build()
+            @test wellformed(cmd) && count("key:", cmd.cmd) >= length(many)
+            @test allocs(build) < 100 * sizeof(cmd.cmd)
+        end
     end
 
     @testset "connection failures" begin

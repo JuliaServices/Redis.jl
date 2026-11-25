@@ -38,15 +38,7 @@ function set(key::AbstractString, value::AbstractString; nx::Bool=false, xx::Boo
     return nx || xx ? Command{Union{String,Nothing}}(command) : Command{String}(command)
 end
 
-function mset(pairs::Pair{String, String}...)
-    n_args = 1 + 2 * length(pairs)
-    command = "*$n_args\r\n\$4\r\nMSET\r\n"
-    for (key, value) in pairs
-        command *= "\$$(sizeof(key))\r\n$key\r\n"
-        command *= "\$$(sizeof(value))\r\n$value\r\n"
-    end
-    return Command{String}(command)
-end
+mset(pairs::Pair{String, String}...) = Command{String}(resp("MSET", Iterators.flatten(pairs)...))
 
 function append(key::AbstractString, value::AbstractString)
     command = "*3\r\n\$6\r\nAPPEND\r\n\$$(sizeof(key))\r\n$key\r\n\$$(sizeof(value))\r\n$value\r\n"
@@ -64,14 +56,7 @@ function get(key::AbstractString)
     return Command{Union{String,Nothing}}(command)
 end
 
-function mget(keys::AbstractString...)
-    narg = 1 + length(keys)
-    command = "*$narg\r\n\$4\r\nMGET\r\n"
-    for key in keys
-        command *= "\$$(sizeof(key))\r\n$key\r\n"
-    end
-    return Command{Vector{Union{String,Nothing}}}(command)
-end
+mget(keys::AbstractString...) = Command{Vector{Union{String,Nothing}}}(resp("MGET", keys...))
 
 function del(key::AbstractString)
     command = "*2\r\n\$3\r\nDEL\r\n\$$(sizeof(key))\r\n$key\r\n"
@@ -232,14 +217,8 @@ function xreadgroup(group::AbstractString, consumer::AbstractString, streams::Pa
     return Command{Any}(command)
 end
 
-function xack(stream::AbstractString, group::AbstractString, ids::AbstractString...)
-    nargs = 3 + length(ids)
-    command = "*$nargs\r\n\$4\r\nXACK\r\n\$$(sizeof(stream))\r\n$stream\r\n\$$(sizeof(group))\r\n$group\r\n"
-    for id in ids
-        command *= "\$$(sizeof(id))\r\n$id\r\n"
-    end
-    return Command{Int}(command)
-end
+xack(stream::AbstractString, group::AbstractString, ids::AbstractString...) =
+    Command{Int}(resp("XACK", stream, group, ids...))
 
 function xpending(stream::AbstractString, group::AbstractString; idle::Union{Int,Nothing}=nothing, start::AbstractString="-", end_::AbstractString="+", count::Union{Int,Nothing}=nothing, consumer::Union{String,Nothing}=nothing)
     if count === nothing
@@ -266,30 +245,13 @@ function xpending(stream::AbstractString, group::AbstractString; idle::Union{Int
 end
 
 function xclaim(stream::AbstractString, group::AbstractString, consumer::AbstractString, min_idle_time::Int, ids::AbstractString...; idle::Union{Int,Nothing}=nothing, time::Union{Int,Nothing}=nothing, retrycount::Union{Int,Nothing}=nothing, force::Bool=false, justid::Bool=false)
-    nargs = 5 + length(ids) + (idle !== nothing ? 2 : 0) + (time !== nothing ? 2 : 0) + (retrycount !== nothing ? 2 : 0) + (force ? 1 : 0) + (justid ? 1 : 0)
-    command = "*$nargs\r\n\$6\r\nXCLAIM\r\n\$$(sizeof(stream))\r\n$stream\r\n\$$(sizeof(group))\r\n$group\r\n\$$(sizeof(consumer))\r\n$consumer\r\n\$$(length(string(min_idle_time)))\r\n$min_idle_time\r\n"
-
-    for id in ids
-        command *= "\$$(sizeof(id))\r\n$id\r\n"
-    end
-
-    if idle !== nothing
-        command *= "\$4\r\nIDLE\r\n\$$(length(string(idle)))\r\n$idle\r\n"
-    end
-    if time !== nothing
-        command *= "\$4\r\nTIME\r\n\$$(length(string(time)))\r\n$time\r\n"
-    end
-    if retrycount !== nothing
-        command *= "\$10\r\nRETRYCOUNT\r\n\$$(length(string(retrycount)))\r\n$retrycount\r\n"
-    end
-    if force
-        command *= "\$5\r\nFORCE\r\n"
-    end
-    if justid
-        command *= "\$6\r\nJUSTID\r\n"
-    end
-
-    return Command{Any}(command)
+    parts = String["XCLAIM", stream, group, consumer, string(min_idle_time), ids...]
+    idle === nothing || push!(parts, "IDLE", string(idle))
+    time === nothing || push!(parts, "TIME", string(time))
+    retrycount === nothing || push!(parts, "RETRYCOUNT", string(retrycount))
+    force && push!(parts, "FORCE")
+    justid && push!(parts, "JUSTID")
+    return Command{Any}(resp(parts...))
 end
 
 # claim entries of `group` idle at least `min_idle_time` ms, whichever consumer holds them,
@@ -430,23 +392,9 @@ function geodist(key::AbstractString, member1::AbstractString, member2::Abstract
     return Command{Union{String,Nothing}}(command)
 end
 
-function geohash(key::AbstractString, members::AbstractString...)
-    n_args = 2 + length(members)
-    command = "*$n_args\r\n\$7\r\nGEOHASH\r\n\$$(sizeof(key))\r\n$key\r\n"
-    for member in members
-        command *= "\$$(sizeof(member))\r\n$member\r\n"
-    end
-    return Command{Any}(command)
-end
+geohash(key::AbstractString, members::AbstractString...) = Command{Any}(resp("GEOHASH", key, members...))
 
-function geopos(key::AbstractString, members::AbstractString...)
-    n_args = 2 + length(members)
-    command = "*$n_args\r\n\$6\r\nGEOPOS\r\n\$$(sizeof(key))\r\n$key\r\n"
-    for member in members
-        command *= "\$$(sizeof(member))\r\n$member\r\n"
-    end
-    return Command{Any}(command)
-end
+geopos(key::AbstractString, members::AbstractString...) = Command{Any}(resp("GEOPOS", key, members...))
 
 function geosearch(key::AbstractString, longitude::AbstractString, latitude::AbstractString, radius::AbstractString, unit::AbstractString)
     command = "*8\r\n\$9\r\nGEOSEARCH\r\n\$$(sizeof(key))\r\n$key\r\n\$10\r\nFROMLONLAT\r\n\$$(sizeof(longitude))\r\n$longitude\r\n\$$(sizeof(latitude))\r\n$latitude\r\n\$8\r\nBYRADIUS\r\n\$$(sizeof(radius))\r\n$radius\r\n\$$(sizeof(unit))\r\n$unit\r\n"
