@@ -85,12 +85,13 @@ mutable struct Client{S <: IO}
     options::Union{Nothing,ConnectionOptions}
     closed::Bool
     multi::Bool # a MULTI was written on this connection and no EXEC or DISCARD since
+    watching::Bool # a WATCH was written on this connection and no EXEC, DISCARD or UNWATCH since
 end
 
 Client(socket::S, debug::Bool, lock::ReentrantLock, responses::Vector{Future}) where {S<:IO} =
-    Client{S}(socket, debug, lock, responses, nothing, false, false)
+    Client{S}(socket, debug, lock, responses, nothing, false, false, false)
 Client(socket::S, debug::Bool, lock::ReentrantLock, responses::Vector{Future}, options, closed::Bool) where {S<:IO} =
-    Client{S}(socket, debug, lock, responses, options, closed, false)
+    Client{S}(socket, debug, lock, responses, options, closed, false, false)
 
 const MULTI_CMD = Commands.multi().cmd
 const EXEC_CMD = Commands.exec().cmd
@@ -99,6 +100,13 @@ _ends_multi(cmd::AbstractString) = cmd == EXEC_CMD || cmd == DISCARD_CMD
 
 # Whether MULTI is open on the connection after `cmd` is written.
 _multi_after(open::Bool, cmd::AbstractString) = cmd == MULTI_CMD || (open && !_ends_multi(cmd))
+
+const UNWATCH_CMD = Commands.resp("UNWATCH")
+_starts_watch(cmd::AbstractString) = startswith(cmd, r"\*\d+\r\n\$5\r\nWATCH\r\n"i)
+_ends_watch(cmd::AbstractString) = _ends_multi(cmd) || cmd == UNWATCH_CMD
+
+# Whether keys are WATCHed on the connection after `cmd` is written.
+_watching_after(watching::Bool, cmd::AbstractString) = _starts_watch(cmd) || (watching && !_ends_watch(cmd))
 
 @inline _response_future(::Type{T}) where {T} = Future{Union{T, Exception}}()
 
@@ -204,11 +212,14 @@ function _ensure_connected_locked!(client::Client)
     client.closed = true
     _fail_pending_locked!(client, RedisConnectionError("redis connection closed before reconnect"))
     _close_quietly(client.socket)
-    if client.multi
-        # The server discarded the transaction with the connection. Fail this
-        # command rather than run it, and the rest of the transaction, outside it.
-        client.multi = false
-        throw(RedisConnectionError("redis connection lost inside MULTI; the server discarded the transaction"))
+    if client.multi || client.watching
+        # The server discarded the transaction, or dropped the WATCH, with the
+        # connection. Fail this command rather than run it, and the rest of the
+        # transaction, without them.
+        msg = client.multi ? "redis connection lost inside MULTI; the server discarded the transaction" :
+            "redis connection lost after WATCH; the server dropped the watched keys"
+        client.multi = client.watching = false
+        throw(RedisConnectionError(msg))
     end
     socket = _open_socket(options, client.debug)
     client.socket = socket
@@ -266,6 +277,7 @@ function execute(client::Client, command::Command{T}) where {T}
         end
         _write_locked!(client, command.cmd)
         client.multi = _multi_after(client.multi, command.cmd)
+        client.watching = _watching_after(client.watching, command.cmd)
         push!(client.responses, fut)
     end
     return _future_wait_typed(fut)
@@ -287,9 +299,10 @@ mutable struct Batch
     nbuffered::Int
     last_flush::DateTime
     multi::Union{Nothing,Bool} # whether the buffered commands leave MULTI open; nothing if they don't touch it
+    watching::Union{Nothing,Bool} # whether the buffered commands leave keys WATCHed; nothing if they don't touch it
 end
 
-Batch() = Batch(ReentrantLock(), IOBuffer(), Future[], 0, Dates.now(), nothing)
+Batch() = Batch(ReentrantLock(), IOBuffer(), Future[], 0, Dates.now(), nothing, nothing)
 
 function Base.push!(batch::Batch, cmd::Command{T}) where {T}
     @lock batch.lock begin
@@ -298,6 +311,8 @@ function Base.push!(batch::Batch, cmd::Command{T}) where {T}
         batch.nbuffered += 1
         cmd.cmd == MULTI_CMD && (batch.multi = true)
         _ends_multi(cmd.cmd) && (batch.multi = false)
+        _starts_watch(cmd.cmd) && (batch.watching = true)
+        _ends_watch(cmd.cmd) && (batch.watching = false)
     end
     return batch
 end
@@ -314,6 +329,7 @@ function execute(client::Client, batch::Batch)
     local cmds::Vector{UInt8}
     local futs::Vector{Future}
     local multi::Union{Nothing,Bool}
+    local watching::Union{Nothing,Bool}
     @lock batch.lock begin
         batch.last_flush = Dates.now()
         cmds = take!(batch.commands)
@@ -321,10 +337,13 @@ function execute(client::Client, batch::Batch)
         batch.nbuffered = 0
         multi = batch.multi
         batch.multi = nothing
+        watching = batch.watching
+        batch.watching = nothing
     end
     @lock client.lock begin
         _write_locked!(client, cmds)
         multi === nothing || (client.multi = multi)
+        watching === nothing || (client.watching = watching)
         append!(client.responses, futs)
     end
     err = CompositeException()
@@ -355,6 +374,7 @@ function execute(client::Client, cmds::Command...)
         len = length(client.responses)
         for cmd in cmds
             client.multi = _multi_after(client.multi, cmd.cmd)
+            client.watching = _watching_after(client.watching, cmd.cmd)
             push!(client.responses, _response_future(resulttype(cmd)))
         end
         # make a copy of our cmd futures to wait on
