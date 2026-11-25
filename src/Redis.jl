@@ -405,6 +405,11 @@ function start_response_reader!(client::Client)
         # we assume that once there are bytes to read, a future has been queued to notify
         while true
             if pos >= len
+                # every buffered byte is consumed: drop a buffer a large reply grew,
+                # rather than hold that memory for the life of the connection
+                if pos > len && length(buf) > 1 << 20
+                    buf, pos, len = Vector{UInt8}(undef, 4096), 1, 0
+                end
                 try
                     eof(socket) && throw(EOFError())
                 catch e

@@ -361,6 +361,19 @@ end
             @test Redis.mget(redis, "binary-key", "missing-binary-key") == [binary_value, nothing]
             @test Redis.execute(redis, Redis.Commands.get("binary-key"), Redis.Commands.get("key2")) ==
                   [binary_value, "value2"]
+            # once a large reply is consumed, the reader gives back the buffer it
+            # grew rather than hold it for the life of the connection
+            Redis.set(redis, "big-key", "x"^(32 << 20))
+            reader = Redis.connect("127.0.0.1", 6379)
+            Redis.get(reader, "key2")
+            GC.gc(true); GC.gc(true)
+            live = Base.gc_live_bytes()
+            @test sizeof(Redis.get(reader, "big-key")) == 32 << 20
+            Redis.get(reader, "key2")
+            GC.gc(true); GC.gc(true)
+            @test Base.gc_live_bytes() - live < 16 << 20
+            close(reader)
+            Redis.del(redis, "big-key")
             close(redis.socket)
             @test Redis.set(redis, "reconnect-key", "reconnect-value") == "OK"
             @test Redis.get(redis, "reconnect-key") == "reconnect-value"
