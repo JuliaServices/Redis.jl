@@ -483,7 +483,24 @@ end
             @test Redis.multi(redis) == "OK"
             @test Redis.set(redis, "tx:w", "mine") == "QUEUED"
             @test Redis.exec(redis) === nothing
+            # EXEC ended the WATCH, so losing the connection now is transparent
+            close(redis.socket)
             @test Redis.get(redis, "tx:w") == "changed"
+            # a connection lost after WATCH fails the next command rather than run the
+            # transaction unwatched; the command after that reconnects
+            watch = C.Command{String}(C.resp("WATCH", "tx:w"))
+            batch = Redis.Batch()
+            for send in (() -> Redis.execute(redis, watch), () -> only(Redis.execute(redis, push!(batch, watch))))
+                @test send() == "OK"
+                close(redis.socket)
+                Redis.set(other, "tx:w", "changed again")
+                @test_throws Redis.RedisConnectionError Redis.execute(redis, C.multi(), C.set("tx:w", "mine"), C.exec())
+                @test Redis.get(redis, "tx:w") == "changed again"
+            end
+            # UNWATCH ends it too
+            @test Redis.execute(redis, watch, C.Command{String}(C.resp("UNWATCH"))) == ["OK", "OK"]
+            close(redis.socket)
+            @test Redis.get(redis, "tx:w") == "changed again"
             foreach(k -> Redis.del(redis, k), ("tx:n", "tx:s", "tx:w"))
             close(other)
             close(redis)
