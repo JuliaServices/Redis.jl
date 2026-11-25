@@ -27,7 +27,15 @@ jobs:
           - windows-latest
         arch:
           - x64
+        # The newer ubuntu-latest image refuses Julia 1.10.0's libopenlibm, which
+        # asks for an executable stack, so the min job runs on ubuntu-24.04.
+        exclude:
+          - os: ubuntu-latest
+            version: 'min'
         include:
+          - os: ubuntu-24.04
+            arch: x64
+            version: min
           - os: macOS-latest
             arch: aarch64
             version: 1
@@ -40,7 +48,7 @@ jobs:
       - uses: julia-actions/cache@v2
       # before buildpkg, so the manifest resolves to Parsers 2; a cold runner has no registry yet
       - name: Test Parsers 2
-        if: matrix.version == 'min' && matrix.os == 'ubuntu-latest'
+        if: matrix.version == 'min' && matrix.os == 'ubuntu-24.04'
         run: julia --project -e 'using Pkg; Pkg.Registry.add(); Pkg.compat("Parsers", "2"); Pkg.resolve()'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
